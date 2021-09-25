@@ -57,6 +57,17 @@ COLCOUNTRY = Prefs['countrycollection']             # add country to collection
 BASE_URL = 'https://gay.aebn.com'
 BASE_SEARCH_URL = [BASE_URL + '/gay/search/?sysQuery={0}', BASE_URL + '/gay/search/movies/page/1?sysQuery={0}&criteria=%7B%22sort%22%3A%22Relevance%22%7D']
 
+IGNORE_STUDIOS_GENRES = ['rawfuckclub','darkalleymedia', 'menatplay', 'kink', 'boundgods', 'boundinpublic']
+ALTERNATE_STUDIOS = {
+    "Dark Alley Media": ["Raw Fuck Club"],
+    "Bound Gods": ["Kink", "Kink Men"],
+    "Bound in Public": ["Kink", "Kink Men"],
+    "Men On Edge": ["Kink", "Kink Men"],
+    "30 Minutes Of Torment": ["Kink", "Kink Men"],
+    "KinkMen" : ["Kink", "Bound Gods", "Bound in Public", "Men On Edge", "30 Minutes Of Torment"],
+    "Kink" : ["KinkMen", "Bound Gods", "Bound in Public", "Men On Edge", "30 Minutes Of Torment"]
+}
+STUDIOS_SKIP_STEPS=["rawfuckclub", "darkalleymedia", "boundgods", "boundinpublic", "menonedge", "30minutesoftorment", "menatplay"]
 # dictionary holding film variables
 FILMDICT = {}
 
@@ -65,6 +76,28 @@ DATEFORMAT = '%b %d, %Y'
 
 # Website Language
 SITE_LANGUAGE = 'en'
+
+XML_PATHS = {
+        'Search': '',
+        'SearchTitle': '',
+        'SearchStudio': '',
+        'SearchUrl': '',
+        'SiteTitle': '',
+        'SiteSummary': '', #not the text but the XML element
+        'ReleaseDate' : '',
+        'SiteArts': '',
+        'CastMembers': '',
+        'CastMembersName': '',
+        'CastName': '',
+        'CastUrl': '',
+        'CastPhoto': '',
+        'SiteTags': '',
+        'Studio': '',
+        'Scenes': '//*[contains(@class,"dts-movie")]/*[contains(@class,"dts-panel")]',
+        'SceneNo': './/*[@class="dts-panel-header-title"]//*[@class="dts-panel-header-title-no-link"]/text()',
+        'SceneCastNames': './/*[@class="dts-scene-star-wrapper"]/*/text()',
+        'SceneGenres': './/*[contains(@class,"dts-scene-info")]/*/*[2]/*[@class="dts-text-link"]/text()',
+}
 
 # ----------------------------------------------------------------------------------------------------------------------------------
 def Start():
@@ -96,6 +129,7 @@ def log(message, *args):
 # ----------------------------------------------------------------------------------------------------------------------------------
 # imports placed here to use previously declared variables
 import utils
+import utilsGenres
 
 # ----------------------------------------------------------------------------------------------------------------------------------
 class AEBNiii(Agent.Movies):
@@ -151,8 +185,17 @@ class AEBNiii(Agent.Movies):
             foundStudio = False
             try:
                 htmlSiteStudio = title.xpath('./section//li[contains(@class,"item-studio")]/a/text()') if ExactMatches else html.xpath('//div[@class="dts-studio-name-wrapper"]/a/text()')
-                log('AGNT  :: %s Site URL Studios            %s', len(htmlSiteStudio), htmlSiteStudio)
+                siteStudios = []
                 for siteStudio in htmlSiteStudio:
+                    if siteStudio not in siteStudios:
+                        siteStudios.append(siteStudio)
+                    if siteStudio in ALTERNATE_STUDIOS:
+                        for alternateStudio in ALTERNATE_STUDIOS[siteStudio]:
+                            if alternateStudio not in siteStudios:
+                                siteStudios.append(alternateStudio)
+                log('AGNT  :: %s Site URL Studios             %s', len(htmlSiteStudio), htmlSiteStudio)
+                log('AGNT  :: %s Site URL Studios w/alternate %s', len(siteStudios), siteStudios)
+                for siteStudio in siteStudios:
                     try:
                         utils.matchStudio(siteStudio, FILMDICT)
                         foundStudio = True
@@ -245,7 +288,10 @@ class AEBNiii(Agent.Movies):
 
         # Search Query - for use to search the internet, remove all non alphabetic characters as GEVI site returns no results if apostrophes or commas exist etc..
         # if title is in a series the search string will be composed of the Film Title minus Series Name and No.
-        searchTitleList = self.CleanSearchString(FILMDICT['SearchTitle'])
+        searchTitleList = []
+        if FILMDICT['SearchMovie']:
+            searchTitleList.extend(self.CleanSearchString(FILMDICT['SearchMovie']))    
+        searchTitleList.extend(self.CleanSearchString(FILMDICT['SearchTitle']))
         for count, searchTitle in enumerate(searchTitleList, start=1):
             searchQuery = BASE_SEARCH_URL[0].format(searchTitle)
             log('SEARCH:: %s. Exact Match Search Query: %s', count, searchQuery)
@@ -287,7 +333,7 @@ class AEBNiii(Agent.Movies):
                     searchQuery = (BASE_URL if BASE_URL not in searchQuery else '') + searchQuery
                     log('SEARCH:: Next Page Search Query: %s', searchQuery)
                     pageNumber = int(html.xpath('//ul[@class="dts-pagination"]/li[@class="active" and text()!="..."]/text()')[0])
-                    morePages = True if pageNumber <= 10 else False
+                    morePages = True if pageNumber <= 1 else False
                 except:
                     searchQuery = ''
                     log('SEARCH:: No More Pages Found')
@@ -310,6 +356,7 @@ class AEBNiii(Agent.Movies):
     def update(self, metadata, media, lang, force=True):
         ''' Update Media Entry '''
         utils.logHeaders('UPDATE', media, lang)
+        
 
         # Fetch HTML.
         FILMDICT = json.loads(metadata.id)
@@ -319,6 +366,11 @@ class AEBNiii(Agent.Movies):
         log(LOG_BIGLINE)
 
         html = HTML.ElementFromURL(FILMDICT['SiteURL'], timeout=60, errors='ignore', sleep=DELAY)
+        htmlScene = None
+
+        isMovie = FILMDICT['Movie'] != ""
+        hasScene = FILMDICT['Title'] != ""
+        runDetailStep = not (isMovie and FILMDICT['Studio'].lower().replace(' ','') in STUDIOS_SKIP_STEPS)
 
         #  The following bits of metadata need to be established and used to update the movie on plex
         #    1.  Metadata that is set by Agent as default
@@ -329,21 +381,52 @@ class AEBNiii(Agent.Movies):
         #        e. Content Rating       : Always X
         #        f. Content Rating Age   : Always 18
         #        g. Collection Info      : From title group of filename 
-
+        if FILMDICT['Movie']:
+            if not 'Scenes' in XML_PATHS:
+                raise Exception('<Scenes XML Path not defined>')
+            if not 'SceneNo' in XML_PATHS:
+                raise Exception('<SceneNo XML Path not defined>')
+            agentSceneNo = FILMDICT['SceneNo'].lower().replace(' ','')
+            scenes = html.xpath(XML_PATHS['Scenes'])
+            foundScene = False
+            for siteScene in scenes:
+                if foundScene == True:
+                    continue
+                if len(siteScene.xpath(XML_PATHS['SceneNo'])) > 0:
+                    sceneNo = siteScene.xpath(XML_PATHS['SceneNo'])[0].lower().replace(' ','').replace('scene','')
+                    if (sceneNo == agentSceneNo):
+                        foundScene = True
+                        htmlScene = siteScene
+                        log('UPDATE:: Matched Scene for Movie %s' , FILMDICT['Movie'])
+                        log('                     Agent Scene %s' , FILMDICT['SceneNo'])
+                        log('                      Site Scene %s' , sceneNo)
+            if foundScene == False:
+                log('UPDATE:: Scene %s not found for Movie %s' , FILMDICT['SceneNo'], FILMDICT['Movie'])
+                log('UPDATE:: Updating title and poster')
+        
         # 1a.   Set Studio
         metadata.studio = FILMDICT['Studio']
         log('UPDATE:: Studio: %s' , metadata.studio)
 
         # 1b.   Set Title
-        metadata.title = FILMDICT['Title']
+        if FILMDICT['Movie']:
+            if FILMDICT['SceneNo']:
+                metadata.title = '%s (Scene %s) - %s' % (FILMDICT['Movie'], FILMDICT['SceneNo'], FILMDICT['Title']) if FILMDICT['Title'] else '%s (Scene %s)' % (FILMDICT['Movie'], FILMDICT['SceneNo'])            
+            else:
+                metadata.title = '%s - %s' % (FILMDICT['Movie'],  FILMDICT['Title']) if FILMDICT['Title'] else FILMDICT['Movie']
+        else:
+            metadata.title = FILMDICT['Title']
         log('UPDATE:: Title: %s' , metadata.title)
 
         # 1c/d. Set Tagline/Originally Available from metadata.id
-        metadata.tagline = FILMDICT['SiteURL']
-        metadata.originally_available_at = datetime.strptime(FILMDICT['CompareDate'], DATEFORMAT)
-        metadata.year = metadata.originally_available_at.year
-        log('UPDATE:: Tagline: %s', metadata.tagline)
-        log('UPDATE:: Default Originally Available Date: %s', metadata.originally_available_at)
+        if runDetailStep:
+            metadata.tagline = FILMDICT['SiteURL']
+
+        if FILMDICT['CompareDate']:
+            metadata.originally_available_at = datetime.strptime(FILMDICT['CompareDate'], DATEFORMAT)
+            metadata.year = metadata.originally_available_at.year
+            log('UPDATE:: Tagline: %s', metadata.tagline)
+            log('UPDATE:: Default Originally Available Date: %s', metadata.originally_available_at)
 
         # 1e/f. Set Content Rating to Adult/18 years
         metadata.content_rating = 'X'
@@ -354,10 +437,11 @@ class AEBNiii(Agent.Movies):
         if COLCLEAR:
             metadata.collections.clear()
 
-        collections = FILMDICT['Collection']
-        for collection in collections:
-            metadata.collections.add(collection)
-        log('UPDATE:: Collection Set From filename: %s', collections)
+        if COLTITLE:
+            collections = FILMDICT['Collection']
+            for collection in collections:
+                metadata.collections.add(collection)
+            log('UPDATE:: Collection Set From filename: %s', collections)
 
         #    2.  Metadata retrieved from website
         #        a. Genres
@@ -371,41 +455,47 @@ class AEBNiii(Agent.Movies):
         # 2a.   Genres
         log(LOG_BIGLINE)
         try:
-            ignoreGenres = ['feature', 'exclusive', 'new release']
+            ignoreGenres = ['feature', 'exclusive', 'new release', 'hd', 'high definition']
             genres = []
-            htmlgenres = html.xpath('//span[@class="dts-image-display-name"]/text()')
-            htmlgenres = [x.strip() for x in htmlgenres if x.strip()]
-            htmlgenres.sort()
-            log('UPDATE:: %s Genres Found: %s', len(htmlgenres), htmlgenres)
-            for genre in htmlgenres:
-                if anyOf(x in genre.lower() for x in ignoreGenres):
-                    continue
-                genres.append(genre)
-                if 'compilation' in genre.lower():
-                    FILMDICT['Compilation'] = 'Compilation'
+            if runDetailStep:
+                #if FILMDICT['Match'] == 'Movie':
+                #    htmlgenres = htmlScene.xpath(XML_PATHS['SceneGenres'])
+                #else:
+                htmlgenres = html.xpath('//span[@class="dts-image-display-name"]/text()')
 
-            metadata.genres.clear()
-            for genre in genres:
-                metadata.genres.add(genre)
-                # add genres to collection
-                if COLGENRE:
-                    metadata.collections.add(genre)
+                htmlgenres = [x.strip() for x in htmlgenres if x.strip()]
+                htmlgenres.sort()
+                log('UPDATE:: %s Genres Found: %s', len(htmlgenres), htmlgenres)
+                for genre in htmlgenres:
+                    if anyOf(x in genre.lower() for x in ignoreGenres):
+                        continue
+                    genres.append(genre)
+                    if 'compilation' in genre.lower():
+                        FILMDICT['Compilation'] = 'Compilation'
 
+                metadata.genres.clear()
+                genres = utilsGenres.getGenres(genres)
+                for genre in genres:
+                    metadata.genres.add(genre)
+                    # add genres to collection
+                    if COLGENRE:
+                        metadata.collections.add(genre)
         except Exception as e:
             log('UPDATE:: Error getting Genres: %s', e)
 
         # 2b.   Collections
-        log(LOG_BIGLINE)
-        try:
-            htmlcollections = html.xpath('//li[@class="section-detail-list-item-series"]/span/a/span/text()')
-            htmlcollections = [x for x in htmlcollections if x.strip()]
-            log('UPDATE:: %s Collections Found: %s', len(htmlcollections), htmlcollections)
-            uniqueCollections = [x for x in htmlcollections if x.lower() not in (y.lower() for y in FILMDICT['Collection'])]
-            for collection in uniqueCollections:
-                metadata.collections.add(collection)
-                log('UPDATE:: %s Collection Added: %s', collection)
-        except Exception as e:
-            log('UPDATE:: Error getting Collections: %s', e)
+        if runDetailStep and COLTITLE:
+            log(LOG_BIGLINE)
+            try:
+                htmlcollections = html.xpath('//li[@class="section-detail-list-item-series"]/span/a/span/text()')
+                htmlcollections = [x for x in htmlcollections if x.strip()]
+                log('UPDATE:: %s Collections Found: %s', len(htmlcollections), htmlcollections)
+                uniqueCollections = [x for x in htmlcollections if x.lower() not in (y.lower() for y in FILMDICT['Collection'])]
+                for collection in uniqueCollections:
+                    metadata.collections.add(collection)
+                    log('UPDATE:: %s Collection Added: %s', collection)
+            except Exception as e:
+                log('UPDATE:: Error getting Collections: %s', e)
 
         # 2c.   Directors
         log(LOG_BIGLINE)
@@ -427,24 +517,35 @@ class AEBNiii(Agent.Movies):
             log('UPDATE:: Error getting Director(s): %s', e)
 
         # 2d.   Cast: get thumbnails from IAFD as they are right dimensions for plex cast list and have more actor photos than AdultEntertainmentBroadcastNetwork
-        log(LOG_BIGLINE)
-        try:
-            htmlcast = html.xpath('//div[@class="dts-star-name-overlay"]/text()')
-            castDict = utils.getCast(htmlcast, FILMDICT)
+        if runDetailStep:
+            log(LOG_BIGLINE)
+            try:
+                if FILMDICT['SceneNo']:
+                    htmlcast = htmlScene.xpath(XML_PATHS['SceneCastNames'])
+                else:
+                    htmlcast = html.xpath('//div[@class="dts-star-name-overlay"]/text()')
+                castDict = utils.getCast(htmlcast, FILMDICT)
 
-            # sort the dictionary and add key(Name)- value(Photo, Role) to metadata
-            metadata.roles.clear()
-            for key in sorted(castDict):
-                newRole = metadata.roles.new()
-                newRole.name = key
-                newRole.photo = castDict[key]['Photo']
-                newRole.role = castDict[key]['Role']
-                # add cast name to collection
-                if COLCAST:
-                    metadata.collections.add(key)
+                # sort the dictionary and add key(Name)- value(Photo, Role) to metadata
+                metadata.roles.clear()
+                atLeatOneCastPhoto = False
+                for key in sorted(castDict):
+                    newRole = metadata.roles.new()
+                    newRole.name = key
+                    newRole.photo = castDict[key]['Photo']
+                    if castDict[key]['Photo']:
+                        atLeatOneCastPhoto = True
+                    newRole.role = castDict[key]['Role']
+                    # add cast name to collection
+                    if COLCAST:
+                        metadata.collections.add(key)
+                #When no cast member have a photos, don't fetch, they will be fetched by a lower priority agent
+                if atLeatOneCastPhoto == False:
+                    log('UPDATE:: No cast photo photo found')
+                    metadata.roles.clear()
 
-        except Exception as e:
-            log('UPDATE:: Error getting Cast: %s', e)
+            except Exception as e:
+                log('UPDATE:: Error getting Cast: %s', e)
 
         # 2e.   Posters/Art - Front Cover set to poster, Back Cover to art
         log(LOG_BIGLINE)
@@ -457,97 +558,102 @@ class AEBNiii(Agent.Movies):
             metadata.posters[image] = Proxy.Media(HTTP.Request(image).content, sort_order=1)
             metadata.posters.validate_keys([image])
 
-            log(LOG_SUBLINE)
-            image = htmlimages[1].split('?')[0]
-            image = ('http:' if 'http:' not in image else '') + image
-            log('UPDATE:: Art Image Found: %s', image)
-            #  clean up and only keep the Art we have added
-            metadata.art[image] = Proxy.Media(HTTP.Request(image).content, sort_order=1)
-            metadata.art.validate_keys([image])
+            if runDetailStep:
+                log(LOG_SUBLINE)
+                image = htmlimages[1].split('?')[0]
+                image = ('http:' if 'http:' not in image else '') + image
+                log('UPDATE:: Art Image Found: %s', image)
+                #  clean up and only keep the Art we have added
+                metadata.art[image] = Proxy.Media(HTTP.Request(image).content, sort_order=1)
+                metadata.art.validate_keys([image])
         except Exception as e:
             log('UPDATE:: Error getting Poster/Art: %s', e)
 
         # 2f.   Reviews - Put all Scene Information here
-        log(LOG_BIGLINE)
         try:
-            htmlscenes = html.xpath('//div[@class="col-sm-6 m-b-1"]')
-            log('UPDATE:: Possible Number of Scenes [%s]', len(htmlscenes))
+            if isMovie and not hasScene:
+                htmlscenes = html.xpath('//div[@class="col-sm-6 m-b-1"]')
+                log(LOG_BIGLINE)
+                log('UPDATE:: Possible Number of Scenes [%s]', len(htmlscenes))
 
-            metadata.reviews.clear()
-            count = 0
-            sceneCount = 0 # avoid enumerating the number of scenes as some films have empty scenes
-            htmlheadings = html.xpath('//header[@class="dts-panel-header"]/div/h1[contains(text(),"Scene")]/text()')
-            htmlscenes = html.xpath('//div[@class="dts-scene-info dts-list-attributes"]')
-            log('UPDATE:: %s Scenes Found', len(htmlscenes))
-            for (heading, htmlscene) in zip(htmlheadings, htmlscenes):
-                try:
-                    count += 1
-                    castList = htmlscene.xpath('./ul/li[descendant::span[text()="Stars:"]]/a/text()')
-                    if castList:
-                        castList = [x.split('(')[0] for x in castList]
-                        title = ', '.join(castList)
-                        log('UPDATE:: Title: Cast List [%s]', title)
-                    else:
-                        title = ''
+                metadata.reviews.clear()
+                count = 0
+                sceneCount = 0 # avoid enumerating the number of scenes as some films have empty scenes
+                htmlheadings = html.xpath('//header[@class="dts-panel-header"]/div/h1[contains(text(),"Scene")]/text()')
+                htmlscenes = html.xpath('//div[@class="dts-scene-info dts-list-attributes"]')
+                log('UPDATE:: %s Scenes Found', len(htmlscenes))
+                for (heading, htmlscene) in zip(htmlheadings, htmlscenes):
+                    try:
+                        count += 1
+                        castList = htmlscene.xpath('./ul/li[descendant::span[text()="Stars:"]]/a/text()')
+                        if castList:
+                            castList = [x.split('(')[0] for x in castList]
+                            title = ', '.join(castList)
+                            log('UPDATE:: Title: Cast List [%s]', title)
+                        else:
+                            title = ''
 
-                    actsList = htmlscene.xpath('./ul/li[descendant::span[text()="Sex acts:"]]/a/text()')
-                    if actsList:
-                        actsList = [x for x in actsList if x]
-                        writing = ', '.join(actsList)
-                        log('UPDATE:: Writing: Sex Acts [%s]', writing)
-                    else:
-                        writing = ''
+                        actsList = htmlscene.xpath('./ul/li[descendant::span[text()="Sex acts:"]]/a/text()')
+                        if actsList:
+                            actsList = [x for x in actsList if x]
+                            writing = ', '.join(actsList)
+                            log('UPDATE:: Writing: Sex Acts [%s]', writing)
+                        else:
+                            writing = ''
 
-                    # if no title and no scene write up
-                    if not title and not writing:
-                        continue
-                    sceneCount += 1
+                        # if no title and no scene write up
+                        if not title and not writing:
+                            continue
+                        sceneCount += 1
 
-                    settingsList = htmlscene.xpath('./ul/li[descendant::span[text()="Settings:"]]/a/text()')
-                    if settingsList:
-                        settingsList = [x for x in settingsList if x]
-                        author = ', '.join(settingsList)
-                        log('UPDATE:: Author: Setting List [%s]', author)
-                        settings = ('[{0}] Setting: {1}').format(heading.strip(), author)
-                    else:
-                        author = '[{0}]'.format(heading.strip())
+                        settingsList = htmlscene.xpath('./ul/li[descendant::span[text()="Settings:"]]/a/text()')
+                        if settingsList:
+                            settingsList = [x for x in settingsList if x]
+                            author = ', '.join(settingsList)
+                            log('UPDATE:: Author: Setting List [%s]', author)
+                            settings = ('[{0}] Setting: {1}').format(heading.strip(), author)
+                        else:
+                            author = '[{0}]'.format(heading.strip())
 
-                    newReview = metadata.reviews.new()
-                    newReview.author = author
-                    newReview.link  = FILMDICT['SiteURL']
-                    if len(title) > 40:
-                        for i in range(40, -1, -1):
-                            if title[i] == ' ':
-                                title = title[0:i]
-                                break
-                    newReview.source = '{0}. {1}...'.format(sceneCount, title if title else FILMDICT['Title'])
-                    if len(writing) > 275:
-                        for i in range(275, -1, -1):
-                            if writing[i] in ['.', '!', '?']:
-                                writing = writing[0:i + 1]
-                                break
-                    newReview.text = utils.TranslateString(writing, lang)
-                    log(LOG_SUBLINE)
-                except Exception as e:
-                    log('UPDATE:: Error getting Scene No. %s: %s', count, e)
+                        newReview = metadata.reviews.new()
+                        newReview.author = author
+                        newReview.link  = FILMDICT['SiteURL']
+                        if len(title) > 40:
+                            for i in range(40, -1, -1):
+                                if title[i] == ' ':
+                                    title = title[0:i]
+                                    break
+                        newReview.source = '{0}. {1}...'.format(sceneCount, title if title else FILMDICT['Title'])
+                        if len(writing) > 275:
+                            for i in range(275, -1, -1):
+                                if writing[i] in ['.', '!', '?']:
+                                    writing = writing[0:i + 1]
+                                    break
+                        newReview.text = utils.TranslateString(writing, lang)
+                        log(LOG_SUBLINE)
+                    except Exception as e:
+                        log('UPDATE:: Error getting Scene No. %s: %s', count, e)
         except Exception as e:
             log('UPDATE:: Error getting Scenes: %s', e)
 
         # 2g.   Summary = IAFD Legend + Synopsis
         # synopsis
-        try:
-            synopsis = html.xpath('//div[@class="dts-section-page-detail-description-body"]/text()')[0].strip()
-            log('UPDATE:: Synopsis Found: %s', synopsis)
-            synopsis = utils.TranslateString(synopsis, lang)
-        except Exception as e:
-            synopsis = ''
-            log('UPDATE:: Error getting Synopsis: %s', e)
+        if runDetailStep:
+            try:
+                synopsis = html.xpath('//div[@class="dts-section-page-detail-description-body"]/text()')[0].strip()
+                log('UPDATE:: Synopsis Found: %s', synopsis)
+                synopsis = utils.TranslateString(synopsis, lang)
+            except Exception as e:
+                synopsis = ''
+                log('UPDATE:: Error getting Synopsis: %s', e)
+            
+            # combine and update
+            log(LOG_SUBLINE)
+            summary = ('{0}\n{1}' if PREFIXLEGEND else '{1}\n{0}').format(FILMDICT['CastLegend'], synopsis.strip())
+            summary = summary.replace('\n\n', '\n')
+            metadata.summary = summary
+            log('UPDATE:: Summary updated %s', metadata.summary)
 
-        # combine and update
-        log(LOG_SUBLINE)
-        summary = ('{0}\n{1}' if PREFIXLEGEND else '{1}\n{0}').format(FILMDICT['CastLegend'], synopsis.strip())
-        summary = summary.replace('\n\n', '\n')
-        metadata.summary = summary
 
         log(LOG_BIGLINE)
         log('UPDATE:: Finished Update Routine')

@@ -33,6 +33,24 @@ IAFD_LEGEND = u'CAST LEGEND\u2003::\u2003{2} Film on IAFD\u2003::\u2003{1} / {0}
 
 # getHTTPRequest variable 
 scraper = None
+TITLE_FIELDS = {
+    'Movie': {
+        'ShortTitle' : 'ShortMovie', 
+        'CompareTitle': 'CompareMovie', 
+        'SearchTitle': 'SearchMovie',
+        'IAFDTitle' : 'IAFDMovie',
+        'IAFDCompareTitle' : 'IAFDCompareMovie',
+        'IAFDSearchTitle' : 'IAFDSearchMovie'
+        },
+    'Title': {
+        'ShortTitle' : 'ShortTitle', 
+        'CompareTitle': 'CompareTitle',
+        'SearchTitle': 'SearchTitle',
+        'IAFDTitle' : 'IAFDTitle',
+        'IAFDCompareTitle' : 'IAFDCompareTitle',
+        'IAFDSearchTitle': 'IAFDSearchTitle'
+        }
+    }
 
 # -------------------------------------------------------------------------------------------------------------------------------
 def getCast(agntCastList, FILMDICT):
@@ -1035,34 +1053,33 @@ def matchFilename(filmPath):
     matched = re.search(pattern, filmVars['FileName'])  # match against end of string
     filmVars['Stacked'] = 'Yes' if matched else 'No'
 
-    REGEX = '^\((?P<Studio0>.+)\) - (?P<Title0>.+) \((?P<Year0>\d{4})\)|^\((?P<Studio1>.+)\) - (?P<Title1>.+)'
+    #File format name : (Studio) [MovieName - scnSceneNo] cnClipNo - Title (Year).ext
+    REGEX = '^\((?P<Studio>.+)\)\s*(\[(?P<Movie>[^.]*?)(\s*-\s*scn(?P<SceneNo>[^ ]*))?\])?\s*(cn(?P<ClipNo>[^ ]*))?\s*-\s*(?P<Title>.+?)\s*(\((?P<Year>\d{4})\))?(\.(.{3})$)'
     pattern = re.compile(REGEX)
     matched = pattern.search(filmVars['FileName'])
     if not matched:
         raise Exception('<File Name [{0}] not in the expected format: (Studio) - Title (Year)>'.format(filmVars['FileName']))
 
     groups = matched.groupdict()
-    filmVars['Format'] = '(Studio) - Title' if groups['Year0'] is None else '(Studio) - Title (Year)'
-    studio = groups['Studio1'] if groups['Year0'] is None else groups['Studio0']
+    filmVars['Format'] = '(Studio) [Movie - scnSceneNo] cnClipNo - Title (Year)'
+    filmVars['Match'] = ''
+    studio = groups['Studio']
     filmVars['Studio'] = studio.split(';')[0].strip() if ';' in studio else studio
     filmVars['IAFDStudio'] = studio.split(';')[1].strip() if ';' in studio else ''
     filmVars['CompareStudio'] = NormaliseComparisonString(filmVars['Studio'])
     filmVars['CompareIAFDStudio'] = NormaliseComparisonString(filmVars['IAFDStudio']) if filmVars['IAFDStudio'] else ''
-
-    filmVars['Title'] =  groups['Title1'] if groups['Year0'] is None else groups['Title0']
-    filmVars['SearchTitle'] = filmVars['Title']
-    filmVars['ShortTitle'] = filmVars['Title']
+    filmVars['ClipNo'] =  groups['ClipNo'] if groups['ClipNo'] is not None else ''
+    filmVars['SceneNo'] =  groups['SceneNo'] if groups['SceneNo'] is not None else ''
+    filmVars['Title'] =  groups['Title'] if groups['Title'] is not None else ''
+    filmVars['Movie'] =  groups['Movie'] if groups['Movie'] is not None else ''
+    filmVars['SearchTitle'] = filmVars['Title'] if groups['Title'] is not None else ''
+    filmVars['ShortTitle'] = filmVars['Title'] if groups['Title'] is not None else ''
+    filmVars['SearchMovie'] = filmVars['Movie'] if groups['Movie'] is not None else ''
+    filmVars['ShortMovie'] = filmVars['Movie'] if groups['Movie'] is not None else ''
     filmVars['CompareTitle'] = [SortAlphaChars(NormaliseComparisonString(filmVars['ShortTitle']))]
-    # if film starts with a determinate, strip the detrminate and add the title to the comparison list
-    pattern = ur'^(The |An |A )'
-    matched = re.search(pattern, filmVars['ShortTitle'], re.IGNORECASE)  # match against whole string
-    if matched:
-        filmVars['CompareTitle'].append(SortAlphaChars(NormaliseComparisonString(re.sub(pattern, '', filmVars['ShortTitle'], flags=re.IGNORECASE))))
-
-    filmVars['IAFDTitle'] =  makeASCII(filmVars['Title'])
-    filmVars['IAFDCompareTitle'] = filmVars['CompareTitle']
-
-    filmVars['Year'] = groups['Year0'] if groups['Year0'] is not None else ''
+    filmVars['CompareMovie'] = [SortAlphaChars(NormaliseComparisonString(filmVars['ShortMovie']))]
+    filmVars['Year'] = groups['Year'] if groups['Year'] is not None else ''
+    
     # default to 31 Dec of Filename year if Year provided in filename and is not 1900
     filmVars['CompareDate'] = datetime(int(filmVars['Year']), 12, 31).strftime(DATEFORMAT) if filmVars['Year'] else ''
 
@@ -1070,71 +1087,85 @@ def matchFilename(filmPath):
     filmInfo = getFilmInfo(filmPath)
     filmVars['Duration'] = str(filmInfo['duration']) if filmInfo != None else ''
 
-    # For this title: (Raging Stallion Studios) - Hardcore Fetish Series - Pissing 1 - Piss Off (2009)
-    #    Collections: [Hardcore Fetish Series, Pissing]
-    #         Series: [Pissing 1]
-    #    Short Title: Piss Off
-    collections = []
-    if COLSTUDIO:
-        collections.append(filmVars['Studio'])                # All films have their Studio Name as a collection
-    series = []
-    splitFilmTitle = filmVars['Title'].split(' - ')
-    splitFilmTitle = [x.strip() for x in splitFilmTitle]
-    splitCount = len(splitFilmTitle) - 1
-    for index, partTitle in enumerate(splitFilmTitle):
-        pattern = r'(?<![-.])\b[0-9]+\b(?!\.[0-9])$'           # series matching = whole separate number at end of string
-        matchedSeries = re.subn(pattern, '', partTitle)
-        if matchedSeries[1]:
-            if COLTITLE:
-                collections.insert(0, matchedSeries[0].strip()) # e.g. Pissing
-            series.insert(0, partTitle)                         # e.g. Pissing 1
-            if index < splitCount:                              # only blank out series info in title if not last split
-                splitFilmTitle[index] = ''
-        else:
-            if index < splitCount:                              # only add to collection if not last part of title e.g. Hardcore Fetish Series
-                splitFilmTitle[index] = ''
+    # if film starts with a determinate, strip the detrminate and add the title to the comparison list
+    pattern = ur'^(The |An |A )'
+    for field in TITLE_FIELDS:
+        matched = re.search(pattern, filmVars[TITLE_FIELDS[field]['ShortTitle']], re.IGNORECASE)  # match against whole string
+        if matched:
+            filmVars[TITLE_FIELDS[field]['CompareTitle']].append(SortAlphaChars(NormaliseComparisonString(re.sub(pattern, '', filmVars[TITLE_FIELDS[field]['ShortTitle']], flags=re.IGNORECASE))))
+
+        filmVars[TITLE_FIELDS[field]['IAFDTitle']] =  makeASCII(filmVars[field])
+        filmVars[TITLE_FIELDS[field]['IAFDCompareTitle']] = filmVars[TITLE_FIELDS[field]['CompareTitle']]
+        # For this title: (Raging Stallion Studios) - Hardcore Fetish Series - Pissing 1 - Piss Off (2009)
+        #    Collections: [Hardcore Fetish Series, Pissing]
+        #         Series: [Pissing 1]
+        #    Short Title: Piss Off
+        # Collections and series will not be matched for Movie Titles
+        splitFilmTitle = filmVars[field].split(' - ')
+        splitFilmTitle = [x.strip() for x in splitFilmTitle]
+        splitCount = len(splitFilmTitle) - 1
+
+        collections = []
+        if COLSTUDIO:
+            collections.append(filmVars['Studio'])                # All films have their Studio Name as a collection
+        series = []
+        for index, partTitle in enumerate(splitFilmTitle):
+            pattern = r'(?<![-.])\b[0-9]+\b(?!\.[0-9])$'           # series matching = whole separate number at end of string
+            matchedSeries = re.subn(pattern, '', partTitle)
+            if matchedSeries[1]:
                 if COLTITLE:
-                    collections.insert(0, partTitle)
+                    collections.insert(0, matchedSeries[0].strip()) # e.g. Pissing
+                series.insert(0, partTitle)                         # e.g. Pissing 1
+                if index < splitCount:                              # only blank out series info in title if not last split
+                    splitFilmTitle[index] = ''
+            else:
+                if index < splitCount:                              # only add to collection if not last part of title e.g. Hardcore Fetish Series
+                    splitFilmTitle[index] = ''
+                    if COLTITLE:
+                        collections.insert(0, partTitle)
+        if field == 'Title':
+            filmVars['Collection'] = collections
+            filmVars['Series'] = series
+        # END IF FIELD TITLE
 
-    filmVars['Collection'] = collections
-    filmVars['Series'] = series
-    filmVars['Title'] = filmVars['Title'] if '- ' not in filmVars['Title'] else re.sub(ur' - |- ', ': ', filmVars['Title']) # put colons back in as they can't be used in the filename
-    pattern = ur'[' + re.escape(''.join(['.', '!', '%', '?'])) + ']+$'
-    filmVars['ShortTitle'] = re.sub(pattern, '', ' '.join(splitFilmTitle).strip())                                          # strip punctuations at end of string
-    if filmVars['ShortTitle'] not in filmVars['CompareTitle']:
-        filmVars['CompareTitle'].append(SortAlphaChars(NormaliseComparisonString(filmVars['ShortTitle'])))
-    filmVars['SearchTitle'] = filmVars['ShortTitle']
-    
-    # prepare IAFD Title and Search String
-    filmVars['IAFDTitle'] = makeASCII(filmVars['ShortTitle']).replace(' - ', ': ').replace('- ', ': ')       # iafd needs colons in place to search correctly, removed all unicode
-    filmVars['IAFDTitle'] = filmVars['IAFDTitle'].replace(' &', ' and')                                      # iafd does not use &
-    filmVars['IAFDTitle'] = filmVars['IAFDTitle'].replace('!', '')                                           # remove !
+        filmVars[field] = filmVars[field] if '- ' not in filmVars[field] else re.sub(ur' - |- ', ': ', filmVars[field]) # put colons back in as they can't be used in the filename
+        pattern = ur'[' + re.escape(''.join(['.', '!', '%', '?'])) + ']+$'
+        filmVars[TITLE_FIELDS[field]['ShortTitle']] = re.sub(pattern, '', ' '.join(splitFilmTitle).strip())                                          # strip punctuations at end of string
+        if filmVars[TITLE_FIELDS[field]['ShortTitle']] not in filmVars[TITLE_FIELDS[field]['CompareTitle']]:
+            filmVars[TITLE_FIELDS[field]['CompareTitle']].append(SortAlphaChars(NormaliseComparisonString(filmVars[TITLE_FIELDS[field]['ShortTitle']])))
+        filmVars[TITLE_FIELDS[field]['SearchTitle']] = filmVars[TITLE_FIELDS[field]['ShortTitle']]
+        
+        # prepare IAFD Title and Search String
+        filmVars[TITLE_FIELDS[field]['IAFDTitle']] = makeASCII(filmVars[TITLE_FIELDS[field]['ShortTitle']]).replace(' - ', ': ').replace('- ', ': ')       # iafd needs colons in place to search correctly, removed all unicode
+        filmVars[TITLE_FIELDS[field]['IAFDTitle']] = filmVars[TITLE_FIELDS[field]['IAFDTitle']].replace(' &', ' and')                                      # iafd does not use &
+        filmVars[TITLE_FIELDS[field]['IAFDTitle']] = filmVars[TITLE_FIELDS[field]['IAFDTitle']].replace('!', '')                                           # remove !
 
-    # split and take up to first occurence of character
-    splitChars = ['[', '(', ur'\u2013', ur'\u2014']
-    pattern = ur'[{0}]'.format(''.join(splitChars))
-    matched = re.search(pattern, filmVars['IAFDTitle'])  # match against whole string
-    if matched:
-        filmVars['IAFDTitle'] = filmVars['IAFDTitle'][:matched.start()]
+        # split and take up to first occurence of character
+        splitChars = ['[', '(', ur'\u2013', ur'\u2014']
+        pattern = ur'[{0}]'.format(''.join(splitChars))
+        matched = re.search(pattern, filmVars[TITLE_FIELDS[field]['IAFDTitle']])  # match against whole string
+        if matched:
+            filmVars[TITLE_FIELDS[field]['IAFDTitle']] = filmVars[TITLE_FIELDS[field]['IAFDTitle']][:matched.start()]
 
-    # strip standalone '1's'
-    pattern = ur'(?<!\d)1(?!\d)'
-    filmVars['IAFDTitle'] = re.sub(pattern, '', filmVars['IAFDTitle'])
+        # strip standalone '1's'
+        pattern = ur'(?<!\d)1(?!\d)'
+        filmVars[TITLE_FIELDS[field]['IAFDTitle']] = re.sub(pattern, '', filmVars[TITLE_FIELDS[field]['IAFDTitle']])
 
-    # strip definite and indefinite english articles
-    pattern = ur'^(The|An|A) '
-    matched = re.search(pattern, filmVars['IAFDTitle'], re.IGNORECASE)  # match against whole string
-    if matched:
-        filmVars['IAFDTitle'] = filmVars['IAFDTitle'][matched.end():]
-        tempCompare = SortAlphaChars(NormaliseComparisonString(filmVars['IAFDTitle']))
-        if tempCompare not in filmVars['IAFDCompareTitle']:
-            filmVars['IAFDCompareTitle'].append(tempCompare)
+        # strip definite and indefinite english articles
+        pattern = ur'^(The|An|A) '
+        matched = re.search(pattern, filmVars[TITLE_FIELDS[field]['IAFDTitle']], re.IGNORECASE)  # match against whole string
+        if matched:
+            filmVars[TITLE_FIELDS[field]['IAFDTitle']] = filmVars[TITLE_FIELDS[field]['IAFDTitle']][matched.end():]
+            tempCompare = SortAlphaChars(NormaliseComparisonString(filmVars[TITLE_FIELDS[field]['IAFDTitle']]))
+            if tempCompare not in filmVars[TITLE_FIELDS[field]['IAFDCompareTitle']]:
+                filmVars[TITLE_FIELDS[field]['IAFDCompareTitle']].append(tempCompare)
 
-    # sort out double encoding: & html code %26 for example is encoded as %2526; on MAC OS '*' sometimes appear in the encoded string, also remove '!'
-    filmVars['IAFDSearchTitle'] = filmVars['IAFDTitle']
-    filmVars['IAFDSearchTitle'] = String.StripDiacritics(filmVars['IAFDSearchTitle']).strip()
-    filmVars['IAFDSearchTitle'] = String.URLEncode(filmVars['IAFDSearchTitle'])
-    filmVars['IAFDSearchTitle'] = filmVars['IAFDSearchTitle'].replace('%25', '%').replace('*', '')
+        # sort out double encoding: & html code %26 for example is encoded as %2526; on MAC OS '*' sometimes appear in the encoded string, also remove '!'
+        filmVars[TITLE_FIELDS[field]['IAFDSearchTitle']] = filmVars[TITLE_FIELDS[field]['IAFDTitle']]
+        filmVars[TITLE_FIELDS[field]['IAFDSearchTitle']] = String.StripDiacritics(filmVars[TITLE_FIELDS[field]['IAFDSearchTitle']]).strip()
+        filmVars[TITLE_FIELDS[field]['IAFDSearchTitle']] = String.URLEncode(filmVars[TITLE_FIELDS[field]['IAFDSearchTitle']])
+        filmVars[TITLE_FIELDS[field]['IAFDSearchTitle']] = filmVars[TITLE_FIELDS[field]['IAFDSearchTitle']].replace('%25', '%').replace('*', '')
+    # END LOOP ON FIELD
 
     # search for IAFD film
     log('UTILS :: Check for Film on IAFD:')
@@ -1192,6 +1223,7 @@ def matchDuration(siteDuration, FILMDICT, matchDuration=True):
 def matchReleaseDate(siteReleaseDate, FILMDICT):
     ''' match file year against website release date: return formatted site date if no error or default to formated file date '''
     # if a year has being provided - default to 31st December of that year
+    siteReleaseDate = siteReleaseDate.replace('Sept', 'Sep')
     siteReleaseDate = datetime.strptime(siteReleaseDate + '1231', '%Y%m%d') if len(siteReleaseDate) == 4 else datetime.strptime(siteReleaseDate, DATEFORMAT)
 
     # there can not be a difference more than 366 days between FileName Date and siteReleaseDate
@@ -1234,27 +1266,54 @@ def matchStudio(siteStudio, FILMDICT, useAgent=True):
     return True
 
 # ----------------------------------------------------------------------------------------------------------------------------------
+def getTitles(siteTitle):
+    titles = []
+    titles.append(siteTitle)
+    titleStripped = siteTitle
+    if ': ' in titleStripped:
+        titleStripped = titleStripped.split(': ', 1)[1]
+        titles.append(titleStripped)
+    if '(' in titleStripped:
+        titleStripped = titleStripped.split('(', 1)[0]
+        titles.append(titleStripped.strip())
+    if '/' in titleStripped:
+        for titleStripped in titleStripped.split('/', 1):
+            titles.append(titleStripped.strip())
+    log("TITLES %s", titles)
+    return titles
+
 def matchTitle(siteTitle, FILMDICT):
-    ''' match file title against website/iafd title: Boolean Return '''
-    amendedSiteTitle = NormaliseComparisonString(siteTitle)
-    amendedShortTitle = NormaliseComparisonString(FILMDICT['ShortTitle'])
-
-    if amendedShortTitle in amendedSiteTitle:
-        pattern = re.compile(re.escape(amendedShortTitle), re.IGNORECASE)
-        amendedSiteTitle = '{0}{1}'.format(re.sub(pattern, '', amendedSiteTitle).strip(), amendedShortTitle) 
-
-    compareSiteTitle = SortAlphaChars(amendedSiteTitle)
-    testTitle = 'Passed' if compareSiteTitle in FILMDICT['CompareTitle'] else 'Passed (IAFD)' if compareSiteTitle in FILMDICT['IAFDCompareTitle'] else 'Failed'
-
-    log('UTILS :: Site Title                    %s', siteTitle)
-    log('UTILS :: Amended Site Title            %s', amendedSiteTitle)
+    titles = getTitles(siteTitle)
+    testTitle = 'Failed'
     log('UTILS :: File Title                    %s', FILMDICT['Title'])
     log('UTILS :: File Short Title              %s', FILMDICT['ShortTitle'])
-    log('UTILS :: Amended Short Title           %s', amendedShortTitle)
-    log('UTILS :: Compare Site Title            %s', compareSiteTitle)
+    log('UTILS :: File Movie                    %s', FILMDICT['Movie'])
+    log('UTILS :: File Short Movie              %s', FILMDICT['ShortMovie'])
+    log('UTILS ::         Agent Movie           %s', FILMDICT['CompareMovie'])
+    log('UTILS ::         IAFD Movie            %s', FILMDICT['IAFDCompareMovie'])
     log('UTILS ::         Agent Title           %s', FILMDICT['CompareTitle'])
     log('UTILS ::         IAFD Title            %s', FILMDICT['IAFDCompareTitle'])
-    log('UTILS :: Title Comparison Test         [%s]', testTitle)
+    for titleRegEx in titles:
+        if testTitle == 'Failed':
+            for field in TITLE_FIELDS:
+                ''' match file title against website/iafd title: Boolean Return '''
+                if testTitle == 'Failed':
+                    amendedSiteTitle = NormaliseComparisonString(titleRegEx)
+                    amendedShortTitle = NormaliseComparisonString(FILMDICT[TITLE_FIELDS[field]['ShortTitle']])
+
+                    if amendedShortTitle in amendedSiteTitle:
+                        pattern = re.compile(re.escape(amendedShortTitle), re.IGNORECASE)
+                        amendedSiteTitle = '{0}{1}'.format(re.sub(pattern, '', amendedSiteTitle).strip(), amendedShortTitle) 
+
+                    compareSiteTitle = SortAlphaChars(amendedSiteTitle)
+                    testTitle = 'Passed' if compareSiteTitle in FILMDICT[TITLE_FIELDS[field]['CompareTitle']] else 'Passed (IAFD)' if compareSiteTitle in FILMDICT[TITLE_FIELDS[field]['IAFDCompareTitle']] else 'Failed'
+                    if testTitle == 'Passed' and TITLE_FIELDS[field]['CompareTitle'] == 'CompareMovie':
+                        FILMDICT['Match'] = 'Movie'
+                    log('UTILS :: Site Title                    %s', titleRegEx)
+                    log('UTILS :: Amended Site Title            %s', amendedSiteTitle)
+                    log('UTILS :: Amended Short Title           %s', amendedShortTitle)
+                    log('UTILS :: Compare Site Title            %s', compareSiteTitle)
+                    log('UTILS :: Title Comparison Test         [%s]', testTitle)
 
     if testTitle == 'Failed':
         raise Exception('<Title Match Failure!>')
